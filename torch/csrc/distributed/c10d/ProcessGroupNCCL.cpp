@@ -504,6 +504,8 @@ void ProcessGroupNCCL::WorkNCCL::synchronizeInternal(
 // Same as calling synchronize().
 bool ProcessGroupNCCL::WorkNCCL::wait(std::chrono::milliseconds timeout) {
   RECORD_PARAM_COMMS(
+      static_cast<int>(this->seq_),
+      reinterpret_cast<std::intptr_t>(this),
       rank_,                    // rank
       "wait",                   // colName
       0,                        // inSize
@@ -592,6 +594,17 @@ ProcessGroupNCCL::ProcessGroupNCCL(
             << "\nTIMEOUT(ms): " << options_->timeout.count()
             << "\nUSE_HIGH_PRIORITY_STREAM: "
             << options_->is_high_priority_stream;
+
+  RECORD_PARAM_COMMS(
+      0,
+      reinterpret_cast<std::intptr_t>(this),
+      rank_,                    // rank
+      "init",                   // colName
+      0,                        // inSize
+      0,                        // outSize
+      at::kByte,                // dType
+      std::vector<int64_t>(),   // inSplitSizes
+      std::vector<int64_t>());  // outSplitSizes
 
 #ifdef USE_NCCL_WITH_UCC
   static std::once_flag initialize_ucc_lib_flag;
@@ -1704,7 +1717,11 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::allreduce(
 
   // @lint-ignore CLANGTIDY
   auto tensor = tensors.back();
-  RECORD_PARAM_COMMS(
+  RECORD_PARAM_COMMS_DATA(
+      static_cast<int>(this->getSequenceNumberForGroup()),
+      reinterpret_cast<std::intptr_t>(this),
+      tensors.back(), // inputTensor
+      tensors.back(), // outputTensor
       rank_, // rank
       "allreduce", // colName
       tensor.numel(), // inSize
@@ -1716,13 +1733,17 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::allreduce(
   return allreduce_impl(tensors, opts);
 }
 
-c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::allreduce_coalesced(
+c10::intrusive_ptr<c10d::ProcessGroup::Work> c10d::ProcessGroupNCCL::allreduce_coalesced(
     std::vector<at::Tensor>& tensors,
     const AllreduceCoalescedOptions& opts) {
   auto total_numel = check_gpu_tensors_same_device(tensors);
 
   // @lint-ignore CLANGTIDY
-  RECORD_PARAM_COMMS(
+  RECORD_PARAM_COMMS_DATA(
+      static_cast<int>(this->getSequenceNumberForGroup()),
+      reinterpret_cast<std::intptr_t>(this),
+      tensors.back(), // inputTensor
+      tensors.back(), // outputTensor
       rank_, // rank
       "allreduce_coalesced", // colName
       total_numel, // inSize
@@ -1735,23 +1756,14 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::allreduce_coalesced(
   return allreduce_impl(tensors, opts);
 }
 
-c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::broadcast(
+c10::intrusive_ptr<c10d::ProcessGroup::Work> c10d::ProcessGroupNCCL::broadcast(
     std::vector<at::Tensor>& tensors,
     const BroadcastOptions& opts) {
   check_gpu_tensors_different_devices(tensors);
 
   // @lint-ignore CLANGTIDY
   auto tensor = tensors.back();
-  RECORD_PARAM_COMMS(
-      rank_,                    // rank
-      "broadcast",              // colName
-      tensor.numel(),           // inSize
-      tensor.numel(),           // outSize
-      tensor.scalar_type(),     // dType
-      std::vector<int64_t>(),   // inSplitSizes
-      std::vector<int64_t>());  // outSplitSizes
-
-  return collective(
+  auto pg = collective(
       tensors,
       tensors,
       [&](at::Tensor& input,
@@ -1769,6 +1781,19 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::broadcast(
       },
       OpType::BROADCAST,
       "nccl:broadcast");
+  RECORD_PARAM_COMMS_DATA(
+      static_cast<int>(this->getSequenceNumberForGroup()),
+      reinterpret_cast<std::intptr_t>(this),
+      tensors.back(), // inputTensor
+      tensors.back(), // outputTensor
+      rank_,                    // rank
+      "broadcast",              // colName
+      tensor.numel(),           // inSize
+      tensor.numel(),           // outSize
+      tensor.scalar_type(),     // dType
+      std::vector<int64_t>(),   // inSplitSizes
+      std::vector<int64_t>());  // outSplitSizes
+  return pg;
 }
 
 c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::reduce(
@@ -1777,16 +1802,7 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::reduce(
   check_gpu_tensors_different_devices(tensors);
   // @lint-ignore CLANGTIDY
   auto tensor = tensors.back();
-  RECORD_PARAM_COMMS(
-      rank_,                    // rank
-      "reduce",                 // colName
-      tensor.numel(),           // inSize
-      tensor.numel(),           // outSize
-      tensor.scalar_type(),     // dType
-      std::vector<int64_t>(),   // inSplitSizes
-      std::vector<int64_t>());  // outSplitSizes
-
-  return collective(
+  auto pg = collective(
       tensors,
       tensors,
       [&](at::Tensor& input,
@@ -1806,9 +1822,22 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::reduce(
       },
       OpType::REDUCE,
       "nccl:reduce");
+  RECORD_PARAM_COMMS_DATA(
+      static_cast<int>(this->getSequenceNumberForGroup()),
+      reinterpret_cast<std::intptr_t>(this),
+      tensors.back(), // inputTensor
+      tensors.back(), // outputTensor
+      rank_,                    // rank
+      "reduce",              // colName
+      tensor.numel(),           // inSize
+      tensor.numel(),           // outSize
+      tensor.scalar_type(),     // dType
+      std::vector<int64_t>(),   // inSplitSizes
+      std::vector<int64_t>());  // outSplitSizes
+  return pg;
 }
 
-c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::allgather(
+c10::intrusive_ptr<c10d::ProcessGroup::Work> c10d::ProcessGroupNCCL::allgather(
     std::vector<std::vector<at::Tensor>>& outputTensors,
     std::vector<at::Tensor>& inputTensors,
     const AllgatherOptions& opts) {
@@ -1820,17 +1849,7 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::allgather(
 
   // @lint-ignore CLANGTIDY
   auto tensor = inputTensors.back();
-  RECORD_PARAM_COMMS(
-      rank_,                    // rank
-      "all_gather",             // colName
-      tensor.numel(),           // inSize
-      tensor.numel() *          // outSize
-        this->getSize(),        // dType
-      tensor.scalar_type(),
-      std::vector<int64_t>(),   // inSplitSizes
-      std::vector<int64_t>());  // outSplitSize
-
-  return collective(
+  auto pg = collective(
       inputTensors,
       outputFlattened,
       [&](at::Tensor& input,
@@ -1863,9 +1882,23 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::allgather(
       },
       OpType::ALLGATHER,
       "nccl:all_gather");
+  RECORD_PARAM_COMMS_DATA(
+      static_cast<int>(this->getSequenceNumberForGroup()),
+      reinterpret_cast<std::intptr_t>(this),
+      inputTensors.back(), // inputTensor
+      outputTensors.back(), // outputTensor
+      rank_,                    // rank
+      "all_gather",             // colName
+      tensor.numel(),           // inSize
+      tensor.numel() *          // outSize
+        this->getSize(),
+      tensor.scalar_type(),     // dType
+      std::vector<int64_t>(),   // inSplitSizes
+      std::vector<int64_t>());  // outSplitSize
+  return pg;
 }
 
-c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::allgather_coalesced(
+c10::intrusive_ptr<c10d::ProcessGroup::Work> c10d::ProcessGroupNCCL::allgather_coalesced(
     std::vector<std::vector<at::Tensor>>& /* unused */,
     std::vector<at::Tensor>& /* unused */,
     const AllgatherOptions& /* unused */) {
@@ -1873,7 +1906,7 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::allgather_coalesced(
       "ProcessGroupNCCL does not support allgather_coalesced");
 }
 
-c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::reduce_scatter(
+c10::intrusive_ptr<c10d::ProcessGroup::Work> c10d::ProcessGroupNCCL::reduce_scatter(
     std::vector<at::Tensor>& outputTensors,
     std::vector<std::vector<at::Tensor>>& inputTensors,
     const ReduceScatterOptions& opts) {
@@ -1881,21 +1914,12 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::reduce_scatter(
 
   // @lint-ignore CLANGTIDY
   auto tensor = outputTensors.back();
-  RECORD_PARAM_COMMS(
-      rank_,                    // rank
-      "reduce_scatter",         // colName
-      tensor.numel() *          // inSize
-        this->getSize(),        // outSize
-      tensor.numel(),           // dType
-      tensor.scalar_type(),
-      std::vector<int64_t>(),   // inSplitSizes
-      std::vector<int64_t>());  // outSplitSizes
 
   auto inputFlattened =
       flatten_for_scatter_gather(inputTensors, outputTensors, size_);
   check_gpu_tensors_different_devices(inputFlattened);
 
-  return collective(
+  auto pg = collective(
       inputFlattened,
       outputTensors,
       [&](at::Tensor& input,
@@ -1929,15 +1953,30 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::reduce_scatter(
       [&](std::vector<at::cuda::CUDAStream>& ncclStreams) {},
       OpType::REDUCE_SCATTER,
       "nccl:reduce_scatter");
+
+  RECORD_PARAM_COMMS_DATA(
+      static_cast<int>(this->getSequenceNumberForGroup()),
+      reinterpret_cast<std::intptr_t>(this),
+      inputTensors.back(), // inputTensor
+      outputTensors.back(), // outputTensor
+      rank_,                    // rank
+      "reduce_scatter",         // colName
+      tensor.numel() *          // inSize
+        this->getSize(),
+      tensor.numel(),           // outSize
+      tensor.scalar_type(),     // dType
+      std::vector<int64_t>(),   // inSplitSizes
+      std::vector<int64_t>());  // outSplitSize
+  return pg;
 }
 
-c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::_reduce_scatter_base(
+c10::intrusive_ptr<c10d::ProcessGroup::Work> c10d::ProcessGroupNCCL::_reduce_scatter_base(
     at::Tensor& outputTensor,
     at::Tensor& inputTensor,
     const ReduceScatterOptions& opts) {
 
   if (inputTensor.dtype() != outputTensor.dtype()) {
-    TORCH_CHECK(false, "input tensor must be the same type as the outut tensor.");
+    TORCH_CHECK(false, "input tensor must be the same type as the output tensor.");
   }
 
   if (inputTensor.numel() != outputTensor.numel() * size_) {
@@ -1946,20 +1985,11 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::_reduce_scatter_base(
 
   // @lint-ignore CLANGTIDY
   const auto& tensor = outputTensor;
-  RECORD_PARAM_COMMS(
-      rank_,                      // rank
-      "_reduce_scatter_base",     // colName
-      tensor.numel() *            // inSize
-        this->getSize(),
-      tensor.numel(),             // outSize
-      tensor.scalar_type(),       // dtype
-      std::vector<int64_t>(),      // inSplitSizes
-      std::vector<int64_t>());     // outSplitSizes
 
   auto inputs = std::vector<at::Tensor> {inputTensor};
   auto outputs = std::vector<at::Tensor> {outputTensor};
 
-  return collective(
+  auto pg = collective(
       inputs,
       outputs,
       [&](at::Tensor& input,
@@ -1981,11 +2011,27 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::_reduce_scatter_base(
       [&](std::vector<at::cuda::CUDAStream>&) {},
       OpType::_REDUCE_SCATTER_BASE,
       "nccl:_reduce_scatter_base");
+  RECORD_PARAM_COMMS_DATA(
+      static_cast<int>(this->getSequenceNumberForGroup()),
+      reinterpret_cast<std::intptr_t>(this),
+      inputTensor, // inputTensor
+      outputTensor, // outputTensor
+      rank_,                    // rank
+      "_reduce_scatter_base",   // colName
+      tensor.numel() *          // inSize
+        this->getSize(),
+      tensor.numel(),           // outSize
+      tensor.scalar_type(),     // dType
+      std::vector<int64_t>(),   // inSplitSizes
+      std::vector<int64_t>());  // outSplitSize
+  return pg;
 }
 
-c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::barrier(
+c10::intrusive_ptr<c10d::ProcessGroup::Work> c10d::ProcessGroupNCCL::barrier(
     const BarrierOptions& opts) {
   RECORD_PARAM_COMMS(
+      static_cast<int>(this->getSequenceNumberForGroup()),
+      reinterpret_cast<std::intptr_t>(this),
       rank_,                    // rank
       "barrier",                // colName
       0,                        // inSize
@@ -2048,7 +2094,7 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::barrier(
 }
 
 #ifdef ENABLE_NCCL_P2P_SUPPORT
-c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::alltoall_base(
+c10::intrusive_ptr<c10d::ProcessGroup::Work> c10d::ProcessGroupNCCL::alltoall_base(
     at::Tensor& outputTensor,
     at::Tensor& inputTensor,
     std::vector<int64_t>& outputSplitSizes,
@@ -2060,16 +2106,7 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::alltoall_base(
     std::vector<at::Tensor> inputTensors = {inputTensor};
     std::vector<at::Tensor> outputTensors = {outputTensor};
 
-    RECORD_PARAM_COMMS(
-        rank_,                    // rank
-        "all_to_all",             // colName
-        inputTensor.numel(),      // inSize
-        outputTensor.numel(),     // outSize
-        inputTensor.scalar_type(),// dType
-        std::vector<int64_t>(),   // inSplitSizes
-        std::vector<int64_t>());  // outSplitSizes
-
-    return collective(
+    auto pg = collective(
         inputTensors,
         outputTensors,
         [&](at::Tensor& input,
@@ -2085,22 +2122,27 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::alltoall_base(
         },
         OpType::ALLTOALL_BASE,
         "nccl:all_to_all");
+
+    RECORD_PARAM_COMMS_DATA(
+        static_cast<int>(this->getSequenceNumberForGroup()),
+        reinterpret_cast<std::intptr_t>(this),
+        inputTensor, // inputTensor
+        outputTensor, // outputTensor
+        rank_,                    // rank
+        "all_to_all",             // colName
+        inputTensor.numel(),      // inSize
+        outputTensor.numel(),     // outSize
+        inputTensor.scalar_type(),// dType
+        std::vector<int64_t>(),   // inSplitSizes
+        std::vector<int64_t>());  // outSplitSizes
+    return pg;
   } else {
     c10d::checkSplitSizes(inputSplitSizes, inputTensor, size_);
     c10d::checkSplitSizes(outputSplitSizes, outputTensor, size_);
     std::vector<at::Tensor> inputTensors = {inputTensor};
     std::vector<at::Tensor> outputTensors = {outputTensor};
 
-    RECORD_PARAM_COMMS(
-        rank_,                    // rank
-        "all_to_allv",            // colName
-        inputTensor.numel(),      // inSize
-        outputTensor.numel(),     // outSize
-        inputTensor.scalar_type(),// dType
-        inputSplitSizes,          // inSplitSizes
-        outputSplitSizes);        // outSplitSizes
-
-    return collective(
+    auto pg = collective(
         inputTensors,
         outputTensors,
         [&](at::Tensor& input,
@@ -2133,10 +2175,23 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::alltoall_base(
         },
         OpType::ALLTOALL_BASE,
         "nccl:all_to_all");
+    RECORD_PARAM_COMMS_DATA(
+        static_cast<int>(this->getSequenceNumberForGroup()),
+        reinterpret_cast<std::intptr_t>(this),
+        inputTensor, // inputTensor
+        outputTensor, // outputTensor
+        rank_,                    // rank
+        "all_to_all",             // colName
+        inputTensor.numel(),      // inSize
+        outputTensor.numel(),     // outSize
+        inputTensor.scalar_type(),// dType
+        std::vector<int64_t>(),   // inSplitSizes
+        std::vector<int64_t>());  // outSplitSizes
+    return pg;
   }
 }
 
-c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::alltoall(
+c10::intrusive_ptr<c10d::ProcessGroup::Work> c10d::ProcessGroupNCCL::alltoall(
     std::vector<at::Tensor>& outputTensors,
     std::vector<at::Tensor>& inputTensors,
     const AllToAllOptions& /* unused */) {
@@ -2267,7 +2322,11 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::gather(
 
   // @lint-ignore CLANGTIDY
   auto tensor = inputTensors.back();
-  RECORD_PARAM_COMMS(
+  RECORD_PARAM_COMMS_DATA(
+      static_cast<int>(this->getSequenceNumberForGroup()),
+      reinterpret_cast<std::intptr_t>(this),
+      inputTensors.back(), // inputTensor
+      outputTensors.back(), // outputTensor
       rank_,                    // rank
       "gather",                 // colName
       tensor.numel(),           // inSize
@@ -2329,7 +2388,7 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::gather(
       "nccl:gather");
 }
 
-c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::scatter(
+c10::intrusive_ptr<c10d::ProcessGroup::Work> c10d::ProcessGroupNCCL::scatter(
     std::vector<at::Tensor>& outputTensors,
     std::vector<std::vector<at::Tensor>>& inputTensors,
     const ScatterOptions& opts) {
@@ -2344,15 +2403,6 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::scatter(
 
   // @lint-ignore CLANGTIDY
   auto tensor = outputTensors.back();
-  RECORD_PARAM_COMMS(
-      rank_,                    // rank
-      "scatter",                // colName
-      tensor.numel(),           // inSize
-      tensor.numel() *
-        this->getSize(),        // outSize
-      tensor.scalar_type(),     // dType
-      std::vector<int64_t>(),   // inSplitSizes
-      std::vector<int64_t>());  // outSplitSize
 
   std::vector<at::Tensor> inputs;
 
@@ -2386,7 +2436,7 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::scatter(
     inputs.emplace_back();
   }
 
-  return collective(
+  auto pg = collective(
       outputTensors,
       inputs,
       [&](at::Tensor& /* unused */,
@@ -2405,6 +2455,21 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::scatter(
       },
       OpType::SCATTER,
       "nccl:scatter");
+
+  RECORD_PARAM_COMMS_DATA(
+      static_cast<int>(this->getSequenceNumberForGroup()),
+      reinterpret_cast<std::intptr_t>(this),
+      inputTensors.back(), // inputTensor
+      outputTensors.back(), // outputTensor
+      rank_,                    // rank
+      "scatter",                // colName
+      tensor.numel(),           // inSize
+      tensor.numel() *
+        this->getSize(),        // outSize
+      tensor.scalar_type(),     // dType
+      std::vector<int64_t>(),   // inSplitSizes
+      std::vector<int64_t>());  // outSplitSize
+  return pg;
 }
 
 c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupNCCL::recvAnysource(
