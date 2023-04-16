@@ -179,7 +179,13 @@ struct TORCH_API Node : std::enable_shared_from_this<Node> {
       } else {
         guard.before(name(), sequence_nr());
       }
-      return apply(std::move(inputs));
+      auto output = apply(std::move(inputs));
+      if (guard.isActive()){
+        if (guard.needsOutputs()) {
+          guard.setOutputs(std::vector<c10::IValue>(output.begin(), output.end()));
+        }
+      }
+      return output;
     } else {
       return apply(std::move(inputs));
     }
